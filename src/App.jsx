@@ -1,348 +1,347 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  noteService, 
+  getStoredApiUrl, 
+  setStoredApiUrl 
+} from './services/api';
+import Header from './components/Header';
+import StatsBar from './components/StatsBar';
+import NoteForm from './components/NoteForm';
+import NoteList from './components/NoteList';
+import ConfirmModal from './components/ConfirmModal';
+import ApiConfigModal from './components/ApiConfigModal';
+import Toast from './components/Toast';
 import './App.css';
 
-// URL base da API (pode ser configurada pelo painel ou variável de ambiente)
-const DEFAULT_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/notes';
-
 export default function App() {
-  const [apiUrl, setApiUrl] = useState(() => {
-    return localStorage.getItem('apiUrl') || DEFAULT_API_URL;
+  // Configuração da URL da API
+  const [apiUrl, setApiUrl] = useState(getStoredApiUrl);
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
+
+  // Tema Claro / Escuro
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem('theme') || 'light';
   });
-  const [showConfig, setShowConfig] = useState(false);
+
+  // Estado das Notas
   const [notas, setNotas] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [busca, setBusca] = useState('');
-  
-  // Estado do formulário (novo ou edição)
-  const [form, setForm] = useState({ id: null, titulo: '', texto: '' });
   const [saving, setSaving] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Carrega notas ao montar o componente ou alterar a URL da API
-  useEffect(() => {
-    localStorage.setItem('apiUrl', apiUrl);
-    fetchNotas();
-  }, [apiUrl]);
+  // Status de conexão com o servidor
+  const [serverStatus, setServerStatus] = useState({
+    online: false,
+    latency: null,
+    loading: true,
+  });
 
-  // GET /api/notes - Listar todas as notas
-  const fetchNotas = async () => {
-    setLoading(true);
-    setError(null);
+  // Notas Fixadas (IDs salvos no localStorage)
+  const [pinnedIds, setPinnedIds] = useState(() => {
     try {
-      const res = await fetch(apiUrl);
-      if (!res.ok) {
-        throw new Error(`Erro ${res.status}: Não foi possível carregar as notas.`);
-      }
-      const data = await res.json();
-      setNotas(Array.isArray(data) ? data : []);
+      const saved = localStorage.getItem('pinnedNotes');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Estado do Formulário
+  const [form, setForm] = useState({ id: null, titulo: '', texto: '' });
+
+  // Modal de Confirmação de Exclusão
+  const [deleteModal, setDeleteModal] = useState({
+    isOpen: false,
+    nota: null,
+  });
+
+  // Sistema de Notificações Toast
+  const [toast, setToast] = useState(null);
+
+  const showToast = (type, title, message) => {
+    setToast({ type, title, message });
+  };
+
+  // Aplica o tema no elemento raiz HTML
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+  };
+
+  // Salva notas fixadas no localStorage
+  useEffect(() => {
+    localStorage.setItem('pinnedNotes', JSON.stringify(pinnedIds));
+  }, [pinnedIds]);
+
+  // Checa status do servidor
+  const verifyServer = useCallback(async (url) => {
+    setServerStatus((prev) => ({ ...prev, loading: true }));
+    const result = await noteService.checkConnection(url);
+    setServerStatus({
+      online: result.online,
+      latency: result.latency,
+      loading: false,
+    });
+  }, []);
+
+  // Busca lista de notas na API
+  const loadNotas = useCallback(async (targetUrl = apiUrl, silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      const data = await noteService.getAll(targetUrl);
+      setNotas(data);
+      verifyServer(targetUrl);
     } catch (err) {
       console.error(err);
-      setError('Falha ao conectar com o backend. Verifique se o servidor está rodando na URL configurada.');
+      setServerStatus({ online: false, latency: null, loading: false });
+      showToast(
+        'error',
+        'Falha de Conexão',
+        `Não foi possível carregar as notas da API (${targetUrl}). Verifique se o servidor está ativo.`
+      );
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
+      setIsRefreshing(false);
     }
+  }, [apiUrl, verifyServer]);
+
+  // Carrega notas ao montar o componente ou alterar a URL
+  useEffect(() => {
+    loadNotas(apiUrl);
+  }, [apiUrl, loadNotas]);
+
+  // Recarregar manual pelo cabeçalho
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await loadNotas(apiUrl, true);
+    showToast('info', 'Atualizado', 'Lista de notas sincronizada com o backend.');
   };
 
-  // Manipula inputs do formulário
-  const handleChange = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
+  // Alternar fixar/desafixar nota
+  const handleTogglePin = (id) => {
+    setPinnedIds((prev) => {
+      const exists = prev.includes(id);
+      const updated = exists ? prev.filter((item) => item !== id) : [...prev, id];
+      showToast(
+        'info',
+        exists ? 'Nota Desafixada' : 'Nota Fixada',
+        exists ? 'A nota voltou para a listagem normal.' : 'A nota agora fica destacada no topo.'
+      );
+      return updated;
+    });
   };
 
-  // POST /api/notes ou PUT /api/notes/:id
-  const handleSubmit = async (e) => {
+  // Salvar (POST ou PUT)
+  const handleSubmitForm = async (e) => {
     e.preventDefault();
-    if (!form.titulo.trim() || !form.texto.trim()) return;
+    if (!form.titulo.trim() || !form.texto.trim()) {
+      showToast('error', 'Campos Obrigatórios', 'Por favor, preencha o título e o conteúdo da nota.');
+      return;
+    }
 
     setSaving(true);
-    setError(null);
-
     const isEditing = Boolean(form.id);
-    const method = isEditing ? 'PUT' : 'POST';
-    const endpoint = isEditing ? `${apiUrl}/${form.id}` : apiUrl;
 
     try {
-      const res = await fetch(endpoint, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          titulo: form.titulo.trim(),
-          texto: form.texto.trim()
-        })
-      });
-
-      if (!res.ok) {
-        throw new Error(`Erro ao ${isEditing ? 'atualizar' : 'criar'} a nota (${res.status})`);
+      if (isEditing) {
+        await noteService.update(form.id, form, apiUrl);
+        showToast('success', 'Nota Atualizada', `A nota "${form.titulo}" foi salva com sucesso.`);
+      } else {
+        await noteService.create(form, apiUrl);
+        showToast('success', 'Nota Criada', `A nova nota "${form.titulo}" foi cadastrada com sucesso!`);
       }
 
-      // Limpa o formulário e recarrega
+      // Limpa formulário e recarrega
       setForm({ id: null, titulo: '', texto: '' });
-      await fetchNotas();
+      await loadNotas(apiUrl, true);
     } catch (err) {
       console.error(err);
-      setError(err.message || 'Erro ao salvar nota.');
+      showToast(
+        'error',
+        isEditing ? 'Erro ao Atualizar' : 'Erro ao Cadastrar',
+        err.message || 'Falha ao salvar a nota no backend.'
+      );
     } finally {
       setSaving(false);
     }
   };
 
-  // Preenche o formulário para edição
-  const handleEdit = (nota) => {
+  // Iniciar edição
+  const handleEditNote = (nota) => {
     setForm({
       id: nota.id,
       titulo: nota.titulo,
-      texto: nota.texto
+      texto: nota.texto,
     });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    // Scroll suave para o formulário
+    const formElement = document.getElementById('form-section');
+    if (formElement) {
+      formElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
   };
 
-  // Cancela o modo de edição
+  // Cancelar edição
   const handleCancelEdit = () => {
     setForm({ id: null, titulo: '', texto: '' });
   };
 
-  // DELETE /api/notes/:id - Excluir nota
-  const handleDelete = async (id) => {
-    if (!window.confirm('Tem certeza que deseja excluir esta nota?')) return;
+  // Abertura do modal de exclusão
+  const handleRequestDelete = (nota) => {
+    setDeleteModal({
+      isOpen: true,
+      nota,
+    });
+  };
+
+  // Confirmação de exclusão (DELETE /api/notes/:id)
+  const handleConfirmDelete = async () => {
+    const nota = deleteModal.nota;
+    if (!nota) return;
 
     try {
-      const res = await fetch(`${apiUrl}/${id}`, {
-        method: 'DELETE'
-      });
-      if (!res.ok) {
-        throw new Error('Erro ao excluir nota');
-      }
-      if (form.id === id) {
+      await noteService.delete(nota.id, apiUrl);
+      showToast('success', 'Nota Excluída', `A nota "${nota.titulo}" foi removida com sucesso.`);
+
+      // Se estava sendo editada, limpa o form
+      if (form.id === nota.id) {
         handleCancelEdit();
       }
-      await fetchNotas();
+
+      // Remove dos fixados se estiver fixada
+      if (pinnedIds.includes(nota.id)) {
+        setPinnedIds((prev) => prev.filter((id) => id !== nota.id));
+      }
+
+      await loadNotas(apiUrl, true);
     } catch (err) {
       console.error(err);
-      alert('Não foi possível excluir a nota. Verifique o backend.');
+      showToast('error', 'Erro ao Excluir', err.message || 'Não foi possível excluir a nota.');
+    } finally {
+      setDeleteModal({ isOpen: false, nota: null });
     }
   };
 
-  // Filtro de notas pela busca
-  const notasFiltradas = notas.filter(nota => 
-    (nota.titulo || '').toLowerCase().includes(busca.toLowerCase()) ||
-    (nota.texto || '').toLowerCase().includes(busca.toLowerCase())
-  );
+  // Salvar nova URL do backend
+  const handleSaveApiUrl = (newUrl) => {
+    setStoredApiUrl(newUrl);
+    setApiUrl(newUrl);
+    showToast('info', 'Backend Atualizado', `Conectando ao endpoint: ${newUrl}`);
+  };
+
+  const scrollToForm = () => {
+    const formElement = document.getElementById('form-section');
+    if (formElement) {
+      formElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
 
   return (
-    <div className="app-wrapper">
-      {/* Cabeçalho */}
-      <header className="header">
-        <div className="header-container">
-          <div className="brand">
-            <span className="logo-icon">📝</span>
-            <div>
-              <h1>Bloco de Notas</h1>
-              <p className="subtitle">Gerencie suas anotações e lembretes em tempo real</p>
-            </div>
-          </div>
+    <div className="app-layout">
+      {/* Sistema de Notificação Toast */}
+      <Toast toast={toast} onClose={() => setToast(null)} />
 
-          <div className="header-actions">
-            <button 
-              type="button" 
-              className="btn-config"
-              onClick={() => setShowConfig(!showConfig)}
-              title="Configurar URL do Backend"
-            >
-              ⚙️ {apiUrl.includes('localhost') ? 'API Local (3000)' : 'API Nuvem (Render)'}
-            </button>
+      {/* Modal de Configuração do Backend */}
+      <ApiConfigModal
+        isOpen={isConfigOpen}
+        currentUrl={apiUrl}
+        onClose={() => setIsConfigOpen(false)}
+        onSave={handleSaveApiUrl}
+      />
+
+      {/* Modal de Confirmação de Exclusão */}
+      <ConfirmModal
+        isOpen={deleteModal.isOpen}
+        title="Excluir Anotação"
+        message="Tem certeza que deseja remover esta nota permanentemente do banco de dados? Esta ação não pode ser desfeita."
+        noteTitle={deleteModal.nota?.titulo}
+        confirmText="Excluir Definitivamente"
+        isDanger={true}
+        onCancel={() => setDeleteModal({ isOpen: false, nota: null })}
+        onConfirm={handleConfirmDelete}
+      />
+
+      {/* Cabeçalho Superior */}
+      <Header
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        apiUrl={apiUrl}
+        onOpenConfig={() => setIsConfigOpen(true)}
+        onRefresh={handleRefresh}
+        isRefreshing={isRefreshing}
+        serverStatus={serverStatus}
+      />
+
+      {/* Corpo Principal da Aplicação */}
+      <main className="main-content">
+        <div className="content-container">
+          {/* Painel de Estatísticas das Notas */}
+          <StatsBar 
+            notas={notas} 
+            serverOnline={serverStatus.online} 
+          />
+
+          {/* Grid com Formulário e Lista */}
+          <div className="main-grid">
+            {/* Coluna do Formulário */}
+            <div className="grid-form-column">
+              <NoteForm
+                form={form}
+                setForm={setForm}
+                onSubmit={handleSubmitForm}
+                onCancelEdit={handleCancelEdit}
+                saving={saving}
+              />
+            </div>
+
+            {/* Coluna da Listagem de Notas */}
+            <div className="grid-list-column">
+              <NoteList
+                notas={notas}
+                loading={loading}
+                pinnedIds={pinnedIds}
+                onTogglePin={handleTogglePin}
+                onEdit={handleEditNote}
+                onRequestDelete={handleRequestDelete}
+                onOpenCreate={scrollToForm}
+              />
+            </div>
           </div>
         </div>
-
-        {/* Painel expansível de configuração da API */}
-        {showConfig && (
-          <div className="config-banner">
-            <div className="config-content">
-              <label htmlFor="api-url-input">
-                <strong>URL do Endpoint do Backend:</strong>
-              </label>
-              <div className="config-input-group">
-                <input
-                  id="api-url-input"
-                  type="url"
-                  value={apiUrl}
-                  onChange={(e) => setApiUrl(e.target.value)}
-                  placeholder="https://seu-backend.onrender.com/api/notes"
-                />
-                <button 
-                  type="button" 
-                  className="btn-preset"
-                  onClick={() => setApiUrl('http://localhost:3000/api/notes')}
-                >
-                  Usar Localhost
-                </button>
-              </div>
-              <small>
-                💡 Cole aqui a URL gerada no <strong>Render</strong> para conectar seu front-end à API em nuvem!
-              </small>
-            </div>
-          </div>
-        )}
-      </header>
-
-      {/* Conteúdo Principal */}
-      <main className="container">
-        {/* Mensagem de Erro / Alerta */}
-        {error && (
-          <div className="alert alert-error">
-            <span>⚠️ {error}</span>
-            <button type="button" onClick={fetchNotas} className="btn-retry">Tentar novamente</button>
-          </div>
-        )}
-
-        {/* Formulário de Criação/Edição */}
-        <section className="form-card">
-          <div className="form-header">
-            <h2>{form.id ? '✏️ Editar Nota' : '➕ Nova Nota'}</h2>
-            {form.id && (
-              <span className="badge badge-editing">Modo de Edição</span>
-            )}
-          </div>
-
-          <form onSubmit={handleSubmit}>
-            <div className="form-group">
-              <label htmlFor="titulo">Título</label>
-              <input
-                type="text"
-                name="titulo"
-                id="titulo"
-                placeholder="Ex: Tarefas da semana, compras..."
-                value={form.titulo}
-                onChange={handleChange}
-                required
-                className="input-field"
-                maxLength={100}
-              />
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="texto">Conteúdo</label>
-              <textarea
-                name="texto"
-                id="texto"
-                placeholder="Escreva a descrição detalhada da nota..."
-                value={form.texto}
-                onChange={handleChange}
-                required
-                className="textarea-field"
-                rows={4}
-              />
-            </div>
-
-            <div className="form-buttons">
-              <button 
-                type="submit" 
-                className="btn btn-primary"
-                disabled={saving}
-              >
-                {saving ? 'Salvando...' : form.id ? 'Atualizar Nota' : 'Cadastrar Nota'}
-              </button>
-
-              {form.id && (
-                <button 
-                  type="button" 
-                  className="btn btn-secondary"
-                  onClick={handleCancelEdit}
-                >
-                  Cancelar Edição
-                </button>
-              )}
-            </div>
-          </form>
-        </section>
-
-        {/* Barra de Busca e Estatísticas */}
-        <section className="controls-bar">
-          <div className="search-box">
-            <span className="search-icon">🔍</span>
-            <input
-              type="text"
-              placeholder="Pesquisar notas por título ou texto..."
-              value={busca}
-              onChange={(e) => setBusca(e.target.value)}
-              className="search-input"
-            />
-            {busca && (
-              <button 
-                type="button" 
-                className="btn-clear-search"
-                onClick={() => setBusca('')}
-              >
-                ✕
-              </button>
-            )}
-          </div>
-          <div className="stats-pill">
-            Total: <strong>{notasFiltradas.length}</strong> {notasFiltradas.length === 1 ? 'nota' : 'notas'}
-          </div>
-        </section>
-
-        {/* Listagem de Notas */}
-        {loading ? (
-          <div className="loading-state">
-            <div className="spinner"></div>
-            <p>Carregando notas...</p>
-          </div>
-        ) : notasFiltradas.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-icon">📭</div>
-            <h3>{busca ? 'Nenhuma nota encontrada com esse filtro' : 'Nenhuma nota cadastrada ainda'}</h3>
-            <p>
-              {busca 
-                ? 'Tente pesquisar por outros termos.' 
-                : 'Utilize o formulário acima para cadastrar a primeira nota!'}
-            </p>
-          </div>
-        ) : (
-          <div className="notas-grid">
-            {notasFiltradas.map((nota) => (
-              <article key={nota.id} className="nota-card">
-                <div className="nota-card-body">
-                  <h3 className="nota-title">{nota.titulo}</h3>
-                  <p className="nota-text">{nota.texto}</p>
-                </div>
-
-                <div className="nota-card-footer">
-                  <time className="nota-date">
-                    📅 {nota.criadoEm ? new Date(nota.criadoEm).toLocaleDateString('pt-BR', {
-                      day: '2-digit',
-                      month: '2-digit',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit'
-                    }) : 'Sem data'}
-                  </time>
-                  <div className="nota-actions">
-                    <button 
-                      type="button" 
-                      onClick={() => handleEdit(nota)} 
-                      className="btn-action btn-edit"
-                      title="Editar nota"
-                    >
-                      ✏️ Editar
-                    </button>
-                    <button 
-                      type="button" 
-                      onClick={() => handleDelete(nota.id)} 
-                      className="btn-action btn-delete"
-                      title="Excluir nota"
-                    >
-                      🗑️ Excluir
-                    </button>
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
       </main>
 
-      {/* Rodapé */}
+      {/* Rodapé com Links Oficiais */}
       <footer className="footer">
-        <p>Projeto Notas • Frameworks Front-end • Backend Node.js / Express & Frontend React</p>
+        <div className="footer-content">
+          <p className="footer-title">
+            Bloco de Notas Fullstack • Desenvolvido com React & Node.js Express
+          </p>
+          <div className="footer-links">
+            <a 
+              href="https://github.com/matheusboffz/back-notas" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="footer-link"
+            >
+              📦 Repositório Backend (back-notas)
+            </a>
+            <span className="footer-sep">•</span>
+            <a 
+              href="https://github.com/matheusboffz/front-notas" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="footer-link"
+            >
+              💻 Repositório Frontend (front-notas)
+            </a>
+          </div>
+          <p className="footer-copy">
+            Arquitetura RESTful completa com operações de CRUD, deploy e documentação OpenAPI/Postman.
+          </p>
+        </div>
       </footer>
     </div>
   );
