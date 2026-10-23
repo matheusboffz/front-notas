@@ -6,8 +6,7 @@ import {
   Download, 
   Inbox, 
   Pin, 
-  FileText, 
-  CheckCircle2 
+  FileText 
 } from 'lucide-react';
 import NoteCard from './NoteCard';
 

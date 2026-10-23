@@ -5,8 +5,7 @@ import {
   Trash2, 
   Copy, 
   Check, 
-  Pin, 
-  Clock 
+  Pin 
 } from 'lucide-react';
 
 export default function NoteCard({ 

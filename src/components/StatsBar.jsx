@@ -1,21 +1,23 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { FileText, Calendar, AlignLeft, CheckCircle2 } from 'lucide-react';
 
 export default function StatsBar({ notas, serverOnline }) {
-  const totalNotas = notas.length;
+  const stats = useMemo(() => {
+    const total = notas.length;
+    const hojeStr = new Date().toDateString();
 
-  const notasHoje = notas.filter((n) => {
-    if (!n.criadoEm) return false;
-    const dataNota = new Date(n.criadoEm).toDateString();
-    const hoje = new Date().toDateString();
-    return dataNota === hoje;
-  }).length;
+    const hoje = notas.filter((n) => {
+      if (!n.criadoEm) return false;
+      return new Date(n.criadoEm).toDateString() === hojeStr;
+    }).length;
 
-  const totalPalavras = notas.reduce((acc, curr) => {
-    const texto = `${curr.titulo || ''} ${curr.texto || ''}`;
-    const palavras = texto.trim().split(/\s+/).filter(Boolean).length;
-    return acc + palavras;
-  }, 0);
+    const palavras = notas.reduce((acc, curr) => {
+      const texto = `${curr.titulo || ''} ${curr.texto || ''}`;
+      return acc + texto.trim().split(/\s+/).filter(Boolean).length;
+    }, 0);
+
+    return { total, hoje, palavras };
+  }, [notas]);
 
   return (
     <div className="stats-bar">
@@ -25,7 +27,7 @@ export default function StatsBar({ notas, serverOnline }) {
         </div>
         <div className="stat-info">
           <span className="stat-label">Total de Notas</span>
-          <strong className="stat-value">{totalNotas}</strong>
+          <strong className="stat-value">{stats.total}</strong>
         </div>
       </div>
 
@@ -35,7 +37,7 @@ export default function StatsBar({ notas, serverOnline }) {
         </div>
         <div className="stat-info">
           <span className="stat-label">Criadas Hoje</span>
-          <strong className="stat-value">{notasHoje}</strong>
+          <strong className="stat-value">{stats.hoje}</strong>
         </div>
       </div>
 
@@ -45,7 +47,7 @@ export default function StatsBar({ notas, serverOnline }) {
         </div>
         <div className="stat-info">
           <span className="stat-label">Total de Palavras</span>
-          <strong className="stat-value">{totalPalavras.toLocaleString('pt-BR')}</strong>
+          <strong className="stat-value">{stats.palavras.toLocaleString('pt-BR')}</strong>
         </div>
       </div>
 
